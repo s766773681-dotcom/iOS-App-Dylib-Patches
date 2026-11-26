@@ -1,0 +1,66 @@
+name: Build iOS dylibs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "**" ]
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+          cmake --version | head -1
+
+      - name: Clone submodules over HTTPS
+        run: |
+          set -e
+          rm -rf src/submodules/fishhook src/submodules/Dobby
+          git clone --depth 1 https://github.com/facebook/fishhook.git src/submodules/fishhook
+          git clone --depth 1 https://github.com/jmpews/Dobby.git src/submodules/Dobby
+
+      - name: CMake configure
+        run: cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build all CMake targets
+        continue-on-error: true
+        run: cmake --build build-cmake --parallel 3
+
+      - name: Build sources missing from CMakeLists
+        continue-on-error: true
+        run: |
+          chmod +x scripts/compile
+          for f in \
+            src/tweaks/general/Force-iPad.m \
+            src/tweaks/general/Force-iPhone.m \
+            src/tweaks/general/LocationSpoof.m \
+            src/tweaks/grindr/GrindrAdBlock.m \
+            src/tweaks/grindr/SSL.m ; do
+            ./scripts/compile "$f" || echo "::warning::FAILED $f"
+          done
+
+      - name: Inspect products
+        run: |
+          mkdir -p out
+          cp build/*.dylib out/ 2>/dev/null || true
+          echo "===== dylib count ====="
+          ls -1 out/*.dylib 2>/dev/null | wc -l
+          echo "===== name / arch / minos / type ====="
+          for f in out/*.dylib; do
+            printf '%-42s %-8s %-6s %s\n' "$(basename $f)" "$(lipo -archs $f)" "$(vtool -show-build $f | awk '/minos/{print $2}')" "$(file -b $f | cut -c1-58)"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-dylibs-arm64
+          path: out/*.dylib
